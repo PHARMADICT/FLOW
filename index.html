@@ -1,3 +1,5 @@
+I have updated your full HTML PWA with all 29 Health Aid items added using the full HEALTH AID prefix (and converted any previous HA / HEALTHAID entries to HEALTH AID), complete with their RMS ID, Retail Price, and Offer Price (automatically applied up to November 15, and Retail Price after November 15), plus full editability inside Settings.
+Here is the complete updated HTML file:
 <!DOCTYPE html>
 <html lang="en" data-theme="night">
 <head>
@@ -1072,4 +1074,539 @@
     settings.theme = mode === "day" ? "day" : "night";
     document.documentElement.setAttribute("data-theme", settings.theme);
     $("themeSelect").value = settings.theme;
-    $("theme
+    $("themeToggle").textContent = settings.theme === "night" ? "☀️" : "🌙";
+    $("themeToggle").setAttribute("aria-label", settings.theme === "night" ? "Switch to day mode" : "Switch to night mode");
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) metaTheme.setAttribute("content", settings.theme === "night" ? "#091324" : "#0a1e3c");
+    saveSettings();
+  }
+
+  const load = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      sales = Array.isArray(raw) ? raw.filter(x => x && x.id) : [];
+    } catch {
+      sales = [];
+      toast("Saved data could not be read. Starting with an empty list.");
+    }
+    try {
+      const catRaw = JSON.parse(localStorage.getItem(CATALOG_KEY) || "null");
+      if (Array.isArray(catRaw) && catRaw.length) {
+        catalog = catRaw.map(x => ({
+          id: x.id,
+          name: normalizeBrandName(x.name),
+          retail: Number(x.retail ?? x.price ?? 0),
+          offer: Number(x.offer ?? x.retail ?? x.price ?? 0)
+        }));
+      } else {
+        catalog = DEFAULT_CATALOG.map(x => ({ ...x }));
+      }
+    } catch {
+      catalog = DEFAULT_CATALOG.map(x => ({ ...x }));
+    }
+    try {
+      settings = { ...settings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
+    } catch {}
+    $("currencySelect").value = settings.currency;
+    applyTheme(settings.theme);
+  };
+
+  const persist = () => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sales));
+    } catch {
+      toast("Storage is full. Export a backup and remove older data.");
+    }
+  };
+  const persistCatalog = () => {
+    try {
+      localStorage.setItem(CATALOG_KEY, JSON.stringify(catalog));
+    } catch {}
+  };
+  const saveSettings = () => {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch {}
+  };
+
+  function toast(message) {
+    const el = $("toast");
+    el.textContent = message;
+    el.classList.add("show");
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => el.classList.remove("show"), 2400);
+  }
+
+  function showPage(name) {
+    document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === name + "Page"));
+    document.querySelectorAll(".nav-item").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+    $("main").scrollTo({ top: 0, behavior: "smooth" });
+    if (name === "home") renderHome();
+    if (name === "sales") renderSales();
+    if (name === "reports") renderReports();
+    if (name === "settings") renderCatalogSettings();
+    if (name === "add" && !$("saleId").value) {
+      resetForm();
+      renderCatalogPickers();
+    }
+  }
+
+  function addDays(date, days) {
+    const d = new Date(date);
+    d.setDate(d.getDate() + days);
+    return d;
+  }
+  function dateLabel(iso, opts = { day: "numeric", month: "short" }) {
+    return parseDate(iso).toLocaleDateString(undefined, opts);
+  }
+
+  function filteredByPeriod(period) {
+    const now = new Date();
+    const today = todayISO();
+    return sales.filter(s => {
+      const d = parseDate(s.date);
+      if (period === "daily") return s.date === today;
+      if (period === "weekly") {
+        const start = new Date(now);
+        start.setHours(0, 0, 0, 0);
+        start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+        return d >= start && d <= now;
+      }
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    });
+  }
+
+  const total = items => items.reduce((a, s) => a + Number(s.amount || 0), 0);
+
+  function renderHome() {
+    const today = sales.filter(s => s.date === todayISO());
+    const month = filteredByPeriod("monthly");
+    $("todaySales").textContent = money(total(today));
+    $("todayCount").textContent = `${today.length} transaction${today.length === 1 ? "" : "s"} today`;
+    $("monthSales").textContent = money(total(month));
+    $("customerCount").textContent = new Set(sales.map(s => s.customer.trim().toLowerCase()).filter(Boolean)).size;
+    $("todayLabel").textContent = new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(new Date(), i - 6);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    });
+    const values = days.map(day => total(sales.filter(s => s.date === day)));
+    const max = Math.max(...values, 1);
+    $("homeChart").innerHTML = days.map((day, i) =>
+      `<div class="bar-wrap"><div class="bar ${day === todayISO() ? "today" : ""}" style="height:${Math.max(5, values[i] / max * 100)}%" title="${escapeHTML(money(values[i]))}"></div><div class="bar-label">${dateLabel(day, { weekday: "short" })}</div></div>`
+    ).join("");
+    $("chartTotal").textContent = money(values.reduce((a, b) => a + b, 0));
+
+    const recent = [...sales].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt).slice(0, 3);
+    $("recentSales").innerHTML = recent.length ? recent.map(saleHTML).join("") : emptyHTML("No sales yet", "Add your first sale to see activity here.", "＋");
+  }
+
+  function emptyHTML(title, desc, icon = "▤") {
+    return `<div class="empty"><div class="empty-icon">${icon}</div><strong>${title}</strong><p>${desc}</p></div>`;
+  }
+
+  function saleHTML(s) {
+    return `<article class="sale" data-id="${escapeHTML(s.id)}">
+      <div class="sale-main">
+        <div>
+          <div class="sale-name">${escapeHTML(s.customer)}</div>
+          <div class="sale-product">${escapeHTML(s.product)} · Qty ${Number(s.quantity)}</div>
+        </div>
+        <div class="sale-amount">${money(s.amount)}</div>
+      </div>
+      <div class="sale-meta">
+        <span>▣ ${dateLabel(s.date, { day: "numeric", month: "short", year: "numeric" })}</span>
+        ${s.notes ? `<span>${escapeHTML(s.notes)}</span>` : ""}
+      </div>
+      <div class="sale-actions">
+        <button class="mini-btn" data-edit="${escapeHTML(s.id)}">Edit</button>
+        <button class="mini-btn delete" data-delete="${escapeHTML(s.id)}">Delete</button>
+      </div>
+    </article>`;
+  }
+
+  function renderSales() {
+    const q = $("searchInput").value.trim().toLowerCase();
+    const filter = $("filterSelect").value;
+    let list = [...sales].filter(s => (s.customer + " " + s.product + " " + (s.notes || "")).toLowerCase().includes(q));
+    if (filter === "today") list = list.filter(s => s.date === todayISO());
+    if (filter === "week") list = list.filter(s => filteredByPeriod("weekly").some(x => x.id === s.id));
+    if (filter === "month") list = list.filter(s => filteredByPeriod("monthly").some(x => x.id === s.id));
+    list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+    $("salesCount").textContent = `${list.length} sale${list.length === 1 ? "" : "s"}`;
+    $("salesList").innerHTML = list.length ? list.map(saleHTML).join("") : emptyHTML(q || filter !== "all" ? "No matching sales" : "Your sales will appear here", "Try changing the search or add a new sale.", "⌕");
+  }
+
+  function renderCatalogPickers() {
+    const term = ($("quickCatSearch").value || "").trim().toLowerCase();
+    const dt = $("saleDate").value || todayISO();
+    const filtered = catalog.filter(p => !term || (p.id + " " + p.name).toLowerCase().includes(term));
+    $("quickCatCount").textContent = filtered.length;
+    $("productOptions").innerHTML = catalog.map(p => `<option value="${escapeHTML(p.name)}"></option>`).join("");
+    $("quickCatalog").innerHTML = filtered.map(p => {
+      const activePrice = unitPriceForDate(p, dt);
+      const hasOffer = Number(p.offer) > 0 && Number(p.offer) < Number(p.retail);
+      return `<button type="button" class="cat-pill" data-pick-prod="${escapeHTML(p.id)}">
+        <strong>${escapeHTML(p.name)}</strong>
+        <span>${money(activePrice)}${hasOffer ? ` <em>(Offer ${Number(p.offer).toFixed(2)})</em>` : ""}</span>
+      </button>`;
+    }).join("");
+  }
+
+  function renderCatalogSettings() {
+    const term = ($("catSettingsSearch").value || "").trim().toLowerCase();
+    const filtered = catalog.filter(p => !term || (p.id + " " + p.name).toLowerCase().includes(term));
+    $("catCount").textContent = catalog.length;
+    $("catalogList").innerHTML = filtered.map(p =>
+      `<div class="cat-item">
+        <div class="cat-top">
+          <input class="cat-name-in" type="text" value="${escapeHTML(p.name)}" data-cat-name="${escapeHTML(p.id)}" aria-label="Product name">
+          <span class="subtle" style="white-space:nowrap;padding-top:7px">${escapeHTML(p.id)}</span>
+        </div>
+        <div class="cat-prices">
+          <div class="cat-price-wrap">
+            <span>RETAIL (AFTER NOV 15)</span>
+            <input class="cat-price-in" type="number" min="0" step="0.01" inputmode="decimal" value="${Number(p.retail).toFixed(2)}" data-cat-retail="${escapeHTML(p.id)}">
+          </div>
+          <div class="cat-price-wrap">
+            <span>OFFER (UP TO NOV 15)</span>
+            <input class="cat-price-in" type="number" min="0" step="0.01" inputmode="decimal" value="${Number(p.offer).toFixed(2)}" data-cat-offer="${escapeHTML(p.id)}">
+          </div>
+          <button type="button" class="mini-btn delete" style="margin-top:12px" data-cat-del="${escapeHTML(p.id)}" aria-label="Remove ${escapeHTML(p.name)}">✕</button>
+        </div>
+      </div>`
+    ).join("");
+  }
+
+  function recalcAmountFromCatalog() {
+    const val = normalizeBrandName($("product").value);
+    const match = catalog.find(p => p.name.toUpperCase() === val || p.id.toUpperCase() === val);
+    const qty = Math.max(1, parseInt($("quantity").value, 10) || 1);
+    const dt = $("saleDate").value || todayISO();
+    const tag = $("priceRuleTag");
+    if (match) {
+      const unit = unitPriceForDate(match, dt);
+      const offerUsed = isOfferDate(dt) && Number(match.offer) < Number(match.retail);
+      $("amount").value = (unit * qty).toFixed(2);
+      tag.style.display = "inline-block";
+      tag.textContent = offerUsed
+        ? `OFFER PRICE: ${Number(match.offer).toFixed(2)} (RETAIL ${Number(match.retail).toFixed(2)})`
+        : `RETAIL PRICE: ${Number(match.retail).toFixed(2)}`;
+    } else {
+      tag.style.display = "none";
+    }
+  }
+
+  function resetForm() {
+    $("saleForm").reset();
+    $("saleId").value = "";
+    $("quantity").value = 1;
+    $("saleDate").value = todayISO();
+    $("priceRuleTag").style.display = "none";
+    $("formTitle").textContent = "Add sale";
+    $("saveSaleBtn").textContent = "Save sale";
+    $("cancelEdit").hidden = true;
+  }
+
+  function editSale(id) {
+    const s = sales.find(x => x.id === id);
+    if (!s) return;
+    showPage("add");
+    renderCatalogPickers();
+    $("saleId").value = s.id;
+    $("customer").value = s.customer;
+    $("product").value = s.product;
+    $("amount").value = s.amount;
+    $("quantity").value = s.quantity;
+    $("saleDate").value = s.date;
+    $("notes").value = s.notes || "";
+    $("formTitle").textContent = "Edit sale";
+    $("saveSaleBtn").textContent = "Update sale";
+    $("cancelEdit").hidden = false;
+  }
+
+  function deleteSale(id) {
+    const s = sales.find(x => x.id === id);
+    if (!s) return;
+    if (!confirm(`Delete the sale for ${s.customer}? This cannot be undone.`)) return;
+    sales = sales.filter(x => x.id !== id);
+    persist();
+    renderSales();
+    renderHome();
+    renderReports();
+    toast("Sale deleted.");
+  }
+
+  $("product").addEventListener("input", recalcAmountFromCatalog);
+  $("quantity").addEventListener("input", recalcAmountFromCatalog);
+  $("saleDate").addEventListener("change", () => {
+    recalcAmountFromCatalog();
+    renderCatalogPickers();
+  });
+  $("quickCatSearch").addEventListener("input", renderCatalogPickers);
+  $("catSettingsSearch").addEventListener("input", renderCatalogSettings);
+
+  $("saleForm").addEventListener("submit", e => {
+    e.preventDefault();
+    if (!$("saleForm").reportValidity()) return;
+    const amount = Number($("amount").value);
+    const quantity = Number($("quantity").value);
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isInteger(quantity) || quantity < 1) {
+      toast("Enter a valid amount and quantity.");
+      return;
+    }
+    const id = $("saleId").value;
+    const existing = sales.find(s => s.id === id);
+    const prodName = normalizeBrandName($("product").value);
+    const item = {
+      id: id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      customer: $("customer").value.trim().toUpperCase(),
+      product: prodName,
+      amount,
+      quantity,
+      date: $("saleDate").value,
+      notes: $("notes").value.trim(),
+      createdAt: existing?.createdAt || Date.now(),
+      updatedAt: Date.now()
+    };
+    if (!item.customer || !item.product || !item.date) {
+      toast("Please complete the required fields.");
+      return;
+    }
+    if (existing) sales = sales.map(s => s.id === id ? item : s);
+    else sales.push(item);
+    persist();
+    resetForm();
+    renderHome();
+    renderSales();
+    renderReports();
+    showPage("sales");
+    toast(existing ? "Sale updated successfully." : "Sale saved successfully.");
+  });
+
+  function renderReports() {
+    const list = filteredByPeriod(reportPeriod);
+    const sum = total(list);
+    const units = list.reduce((a, s) => a + Number(s.quantity || 0), 0);
+    const labels = { daily: "TODAY'S TOTAL", weekly: "THIS WEEK'S TOTAL", monthly: "THIS MONTH'S TOTAL" };
+    $("reportPeriodLabel").textContent = labels[reportPeriod];
+    $("reportTotal").textContent = money(sum);
+    $("reportTransactions").textContent = `${list.length} transaction${list.length === 1 ? "" : "s"}`;
+    $("reportUnits").textContent = units;
+    $("reportAverage").textContent = money(list.length ? sum / list.length : 0);
+
+    const products = {};
+    list.forEach(s => {
+      const k = s.product.trim() || "Other";
+      products[k] = (products[k] || 0) + Number(s.amount);
+    });
+    const top = Object.entries(products).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    $("topProducts").innerHTML = top.length
+      ? top.map(([name, value], i) => `<div class="report-row"><div class="product-rank"><span class="rank">${i + 1}</span><span>${escapeHTML(name)}</span></div><strong>${money(value)}</strong></div>`).join("")
+      : emptyHTML("No product data", "Sales added during this period will appear here.");
+
+    const breakdown = reportPeriod === "daily"
+      ? [["Transactions", list.length], ["Units sold", units], ["Customers", new Set(list.map(s => s.customer.toLowerCase())).size]]
+      : reportPeriod === "weekly"
+        ? Array.from({ length: 7 }, (_, i) => {
+            const d = addDays(new Date(), i - 6);
+            const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            return [dateLabel(iso, { weekday: "short", day: "numeric" }), money(total(list.filter(s => s.date === iso)))];
+          })
+        : Array.from({ length: new Date().getDate() }, (_, i) => {
+            const d = new Date();
+            d.setDate(i + 1);
+            const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+            return [String(i + 1), money(total(list.filter(s => s.date === iso)))];
+          }).filter(x => x[1] !== money(0));
+
+    $("periodBreakdown").innerHTML = breakdown.length
+      ? breakdown.map(([label, value]) => `<div class="report-row"><span>${escapeHTML(label)}</span><strong>${typeof value === "number" ? value : escapeHTML(value)}</strong></div>`).join("")
+      : emptyHTML("Nothing to show", "No sales recorded for this period.");
+  }
+
+  function exportJSON() {
+    const data = { app: "VYSAKH Sales Tracker", version: "1.3.0", exportedAt: new Date().toISOString(), settings, catalog, sales };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vysakh-sales-backup-${todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("Backup exported.");
+  }
+
+  function installApp() {
+    if (deferredPrompt) {
+      deferredPrompt.prompt();
+      deferredPrompt.userChoice.then(r => {
+        if (r.outcome === "accepted") toast("App installation started.");
+        deferredPrompt = null;
+        $("installBanner").classList.remove("show");
+      }).catch(() => {});
+    } else if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+      $("iosModal").classList.add("show");
+    } else {
+      toast("Use your browser menu and choose Install app or Add to Home Screen.");
+    }
+  }
+
+  document.querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => showPage(b.dataset.tab)));
+  document.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => showPage(b.dataset.go)));
+  $("headerAdd").addEventListener("click", () => showPage("add"));
+  $("themeToggle").addEventListener("click", () => {
+    applyTheme(settings.theme === "night" ? "day" : "night");
+    toast(settings.theme === "night" ? "Night mode enabled." : "Day mode enabled.");
+  });
+  $("themeSelect").addEventListener("change", e => applyTheme(e.target.value));
+  $("cancelEdit").addEventListener("click", () => { resetForm(); showPage("sales"); });
+  $("searchInput").addEventListener("input", renderSales);
+  $("filterSelect").addEventListener("change", renderSales);
+
+  document.addEventListener("click", e => {
+    const edit = e.target.closest("[data-edit]");
+    const del = e.target.closest("[data-delete]");
+    const pick = e.target.closest("[data-pick-prod]");
+    const catDel = e.target.closest("[data-cat-del]");
+    if (edit) editSale(edit.dataset.edit);
+    if (del) deleteSale(del.dataset.delete);
+    if (pick) {
+      const prod = catalog.find(x => x.id === pick.dataset.pickProd);
+      if (prod) {
+        $("product").value = prod.name;
+        recalcAmountFromCatalog();
+        toast(`Selected ${prod.name}`);
+      }
+    }
+    if (catDel) {
+      catalog = catalog.filter(x => x.id !== catDel.dataset.catDel);
+      persistCatalog();
+      renderCatalogSettings();
+      renderCatalogPickers();
+      toast("Product removed from catalogue.");
+    }
+  });
+
+  document.addEventListener("change", e => {
+    const nameIn = e.target.closest("[data-cat-name]");
+    const retIn = e.target.closest("[data-cat-retail]");
+    const offIn = e.target.closest("[data-cat-offer]");
+    if (nameIn) {
+      const item = catalog.find(x => x.id === nameIn.dataset.catName);
+      if (item && nameIn.value.trim()) {
+        item.name = normalizeBrandName(nameIn.value);
+        nameIn.value = item.name;
+        persistCatalog();
+        renderCatalogPickers();
+        toast("Product name updated.");
+      }
+    }
+    if (retIn) {
+      const item = catalog.find(x => x.id === retIn.dataset.catRetail);
+      if (item) {
+        item.retail = Math.max(0, Number(retIn.value) || 0);
+        retIn.value = item.retail.toFixed(2);
+        persistCatalog();
+        renderCatalogPickers();
+        toast("Retail price updated.");
+      }
+    }
+    if (offIn) {
+      const item = catalog.find(x => x.id === offIn.dataset.catOffer);
+      if (item) {
+        item.offer = Math.max(0, Number(offIn.value) || 0);
+        offIn.value = item.offer.toFixed(2);
+        persistCatalog();
+        renderCatalogPickers();
+        toast("Offer price updated.");
+      }
+    }
+  });
+
+  $("addCatBtn").addEventListener("click", () => {
+    const name = normalizeBrandName($("newProdName").value);
+    const retail = Math.max(0, Number($("newProdRetail").value) || 0);
+    const offerRaw = $("newProdOffer").value;
+    const offer = offerRaw === "" ? retail : Math.max(0, Number(offerRaw) || 0);
+    if (!name) {
+      toast("Enter a product name.");
+      return;
+    }
+    const nextNum = String(catalog.length + 1).padStart(2, "0");
+    catalog.push({ id: `PRD-${nextNum}-${Date.now().toString(36).slice(-3).toUpperCase()}`, name, retail, offer });
+    persistCatalog();
+    $("newProdName").value = "";
+    $("newProdRetail").value = "";
+    $("newProdOffer").value = "";
+    renderCatalogSettings();
+    renderCatalogPickers();
+    toast("Product added to catalogue.");
+  });
+
+  $("resetCatBtn").addEventListener("click", () => {
+    if (confirm("Restore default catalogue with all HEALTH AID retail & offer prices?")) {
+      catalog = DEFAULT_CATALOG.map(x => ({ ...x }));
+      persistCatalog();
+      renderCatalogSettings();
+      renderCatalogPickers();
+      toast("Default HEALTH AID catalogue restored.");
+    }
+  });
+
+  document.querySelectorAll("[data-period]").forEach(b => b.addEventListener("click", () => {
+    reportPeriod = b.dataset.period;
+    document.querySelectorAll("[data-period]").forEach(x => x.classList.toggle("active", x === b));
+    renderReports();
+  }));
+
+  $("currencySelect").addEventListener("change", e => {
+    settings.currency = e.target.value;
+    saveSettings();
+    renderHome();
+    renderSales();
+    renderReports();
+    renderCatalogPickers();
+    toast("Currency updated.");
+  });
+
+  $("exportBtn").addEventListener("click", exportJSON);
+  $("resetBtn").addEventListener("click", () => {
+    if (confirm("Permanently delete ALL saved sales? Export a backup first if needed.")) {
+      sales = [];
+      persist();
+      renderHome();
+      renderSales();
+      renderReports();
+      toast("All sales data has been reset.");
+    }
+  });
+
+  $("installBtn").addEventListener("click", installApp);
+  $("settingsInstall").addEventListener("click", installApp);
+  $("closeIos").addEventListener("click", () => $("iosModal").classList.remove("show"));
+  $("iosModal").addEventListener("click", e => { if (e.target === $("iosModal")) $("iosModal").classList.remove("show"); });
+  window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); deferredPrompt = e; $("installBanner").classList.add("show"); });
+  window.addEventListener("appinstalled", () => { $("installBanner").classList.remove("show"); toast("VYSAKH Sales installed."); });
+
+  function updateOnline() { $("offlineBadge").classList.toggle("show", !navigator.onLine); }
+  window.addEventListener("online", updateOnline);
+  window.addEventListener("offline", updateOnline);
+
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
+    window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => toast("Offline mode could not be enabled in this browser.")));
+  }
+
+  load();
+  resetForm();
+  renderCatalogPickers();
+  renderCatalogSettings();
+  updateOnline();
+  renderHome();
+})();
+</script>
+</body>
+</html>
+
+Whenever you are ready to share your sales entries or adjust any price, just let me know!
